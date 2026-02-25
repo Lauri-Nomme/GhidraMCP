@@ -44,13 +44,26 @@ import ghidra.program.model.listing.Variable;
 import ghidra.app.decompiler.component.DecompilerUtils;
 import ghidra.app.decompiler.ClangToken;
 import ghidra.framework.options.Options;
+import ghidra.app.services.DebuggerLogicalBreakpointService;
+import ghidra.app.services.DebuggerControlService;
+import ghidra.app.services.DebuggerTraceManagerService;
+import ghidra.app.services.DebuggerTargetService;
+import ghidra.debug.api.breakpoint.LogicalBreakpoint;
+import ghidra.trace.model.Trace;
+import ghidra.trace.model.thread.TraceThread;
+import ghidra.trace.model.context.TraceRegisterContextManager;
+import ghidra.trace.model.context.TraceRegisterContextSpace;
+import ghidra.program.model.lang.Language;
+import ghidra.program.model.lang.Register;
+import ghidra.program.model.lang.RegisterValue;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import javax.swing.SwingUtilities;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
+import java.lang.ProcessBuilder;
+import java.lang.Runtime;
 import java.lang.reflect.InvocationTargetException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
@@ -339,6 +352,62 @@ public class GhidraMCPPlugin extends Plugin {
             int limit = parseIntOrDefault(qparams.get("limit"), 100);
             String filter = qparams.get("filter");
             sendResponse(exchange, listDefinedStrings(offset, limit, filter));
+        });
+
+        // Debugger endpoints
+        server.createContext("/debug/setBreakpoint", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String address = params.get("address");
+            String kind = params.getOrDefault("kind", "sw_execute");
+            boolean enabled = !"false".equals(params.get("enabled"));
+            String result = setBreakpoint(address, kind, enabled);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/debug/removeBreakpoint", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String address = params.get("address");
+            String result = removeBreakpoint(address);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/debug/listBreakpoints", exchange -> {
+            sendResponse(exchange, listBreakpoints());
+        });
+
+        server.createContext("/debug/run", exchange -> {
+            sendResponse(exchange, debugRun());
+        });
+
+        server.createContext("/debug/stop", exchange -> {
+            sendResponse(exchange, debugStop());
+        });
+
+        server.createContext("/debug/stepInto", exchange -> {
+            sendResponse(exchange, debugStepInto());
+        });
+
+        server.createContext("/debug/stepOver", exchange -> {
+            sendResponse(exchange, debugStepOver());
+        });
+
+        server.createContext("/debug/stepOut", exchange -> {
+            sendResponse(exchange, debugStepOut());
+        });
+
+        server.createContext("/debug/registers", exchange -> {
+            sendResponse(exchange, getRegisters());
+        });
+
+        server.createContext("/debug/memory", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            String address = qparams.get("address");
+            int length = parseIntOrDefault(qparams.get("length"), 64);
+            sendResponse(exchange, getMemory(address, length));
+        });
+
+        server.createContext("/debug/status", exchange -> {
+            sendResponse(exchange, getDebugStatus());
         });
 
         server.setExecutor(null);
@@ -1351,6 +1420,342 @@ public class GhidraMCPPlugin extends Plugin {
             return "Error getting function references: " + e.getMessage();
         }
     }
+
+    // ----------------------------------------------------------------------------------
+    // Debugger functionality
+    // ----------------------------------------------------------------------------------
+
+    private DebuggerControlService getControlService() {
+        return tool.getService(DebuggerControlService.class);
+    }
+
+    private DebuggerLogicalBreakpointService getBreakpointService() {
+        return tool.getService(DebuggerLogicalBreakpointService.class);
+    }
+
+    private DebuggerTraceManagerService getTraceManagerService() {
+        return tool.getService(DebuggerTraceManagerService.class);
+    }
+
+    /**
+     * Set a breakpoint at the given address using ProgramLocation
+     * @param addressStr Address to set breakpoint
+     * @param kind Breakpoint kind: "sw_execute", "hw_execute", "read", "write"
+     * @param enabled Whether breakpoint is enabled
+     */
+    private String setBreakpoint(String addressStr, String kind, boolean enabled) {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: No program loaded";
+
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService == null) return "Error: Debugger service not available";
+
+            // Determine breakpoint kind
+            ghidra.trace.model.breakpoint.TraceBreakpointKind bpKind;
+            switch (kind.toLowerCase()) {
+                case "hw_execute":
+                case "hw":
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.HW_EXECUTE;
+                    break;
+                case "read":
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.READ;
+                    break;
+                case "write":
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.WRITE;
+                    break;
+                case "sw_execute":
+                case "sw":
+                case "execute":
+                default:
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.SW_EXECUTE;
+                    break;
+            }
+            
+            java.util.Set<ghidra.trace.model.breakpoint.TraceBreakpointKind> kinds = 
+                java.util.Set.of(bpKind);
+            
+            bpService.placeBreakpointAt(program, addr, 0, kinds, "");
+            
+            return "Breakpoint set at " + addressStr + " (kind: " + bpKind.name() + ")";
+        } catch (Exception e) {
+            return "Error setting breakpoint: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Remove breakpoints at address (deletes all at that address)
+     */
+    private String removeBreakpoint(String addressStr) {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: No program loaded";
+
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService == null) return "Error: Debugger service not available";
+
+            // Get breakpoints at this address
+            var breakpoints = bpService.getBreakpointsAt(program, addr);
+            if (breakpoints != null && !breakpoints.isEmpty()) {
+                // Delete all at this address - need a Trace for deleteAll
+                return "Breakpoint removal requires active debug session (Trace)";
+            }
+
+            return "No breakpoint found at " + addressStr;
+        } catch (Exception e) {
+            return "Error removing breakpoint: " + e.getMessage();
+        }
+    }
+
+    /**
+     * List all breakpoints
+     */
+    private String listBreakpoints() {
+        try {
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService == null) return "Debugger service not available";
+
+            var allBreakpoints = bpService.getAllBreakpoints();
+            if (allBreakpoints == null || allBreakpoints.isEmpty()) {
+                return "No breakpoints set";
+            }
+
+            StringBuilder sb = new StringBuilder();
+            for (LogicalBreakpoint bp : allBreakpoints) {
+                sb.append(bp.toString()).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error listing breakpoints: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Continue execution - uses ControlMode to switch to target mode
+     */
+    private String debugRun() {
+        try {
+            DebuggerControlService control = getControlService();
+            if (control == null) return "Error: Debugger control service not available";
+
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            ghidra.trace.model.Trace currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "Error: No active trace";
+
+            // Set to RO_TARGET mode (read-only target mode - running)
+            control.setCurrentMode(currentTrace, ghidra.debug.api.control.ControlMode.RO_TARGET);
+            return "Execution mode set to RO_TARGET";
+        } catch (Exception e) {
+            return "Error running: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Stop execution - uses ControlMode to switch to trace mode
+     */
+    private String debugStop() {
+        try {
+            DebuggerControlService control = getControlService();
+            if (control == null) return "Error: Debugger control service not available";
+
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            ghidra.trace.model.Trace currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "Error: No active trace";
+
+            // Set to RO_TRACE mode (read-only trace - stopped)
+            control.setCurrentMode(currentTrace, ghidra.debug.api.control.ControlMode.RO_TRACE);
+            return "Execution mode set to RO_TRACE (stopped)";
+        } catch (Exception e) {
+            return "Error stopping: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Step into - placeholder (requires target-specific implementation)
+     */
+    private String debugStepInto() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            if (traces.getCurrentTrace() == null) return "Error: No active trace";
+
+            // Stepping requires accessing the underlying target
+            // This is target-specific (gdb, lldb, etc.) and not exposed in the basic API
+            return "Step into: Not implemented - requires target-specific implementation. Use breakpoints to control execution.";
+        } catch (Exception e) {
+            return "Error stepping into: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Step over - placeholder
+     */
+    private String debugStepOver() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            if (traces.getCurrentTrace() == null) return "Error: No active trace";
+
+            return "Step over: Not implemented - requires target-specific implementation.";
+        } catch (Exception e) {
+            return "Error stepping over: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Step out - placeholder
+     */
+    private String debugStepOut() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            if (traces.getCurrentTrace() == null) return "Error: No active trace";
+
+            return "Step out: Not implemented - requires target-specific implementation.";
+        } catch (Exception e) {
+            return "Error stepping out: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Get current register values from active debug session
+     */
+    private String getRegisters() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            Trace currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "Error: No active trace";
+
+            TraceThread thread = traces.getCurrentThread();
+            if (thread == null) return "Error: No current thread";
+
+            long snap = traces.getCurrentSnap();
+            
+            Language language = currentTrace.getBaseLanguage();
+            TraceRegisterContextManager regCtxMgr = currentTrace.getRegisterContextManager();
+            TraceRegisterContextSpace regSpace = regCtxMgr.getRegisterContextRegisterSpace(thread, false);
+            
+            if (regSpace == null) return "Error: No register context space";
+
+            StringBuilder sb = new StringBuilder();
+            
+            // Get all registers from the language
+            for (Register reg : language.getRegisters()) {
+                RegisterValue regVal = regSpace.getValueWithDefault(null, reg, snap, null);
+                if (regVal != null) {
+                    sb.append(reg.getName()).append(": ").append(regVal.toString()).append("\n");
+                }
+            }
+
+            String result = sb.toString();
+            if (result.isEmpty()) {
+                return "No register values available";
+            }
+            return result;
+        } catch (Exception e) {
+            return "Error getting registers: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Read memory at address
+     * Note: Simplified version - full implementation would use trace API
+     */
+    private String getMemory(String addressStr, int length) {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: No program loaded";
+
+            Address addr;
+            if (addressStr != null && !addressStr.isEmpty()) {
+                addr = program.getAddressFactory().getAddress(addressStr);
+                if (addr == null) return "Error: Invalid address: " + addressStr;
+            } else {
+                return "Error: Address required";
+            }
+
+            // Read from program memory
+            byte[] data = new byte[length];
+            int bytesRead = program.getMemory().getBytes(addr, data);
+
+            if (bytesRead <= 0) return "Error: Could not read memory at " + addr;
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("Address: ").append(addr).append("\n");
+            sb.append("Bytes read: ").append(bytesRead).append("\n\n");
+
+            for (int i = 0; i < bytesRead; i += 16) {
+                sb.append(String.format("%08x: ", i));
+                for (int j = 0; j < 16; j++) {
+                    if (i + j < bytesRead) {
+                        sb.append(String.format("%02x ", data[i + j] & 0xFF));
+                    } else {
+                        sb.append("   ");
+                    }
+                    if (j == 7) sb.append(" ");
+                }
+                sb.append(" |");
+                for (int j = 0; j < 16 && i + j < bytesRead; j++) {
+                    byte b = data[i + j];
+                    char c = (b >= 32 && b < 127) ? (char) b : '.';
+                    sb.append(c);
+                }
+                sb.append("|\n");
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error reading memory: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Get debugger status
+     */
+    private String getDebugStatus() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "No debugger session";
+
+            Object currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "No active trace";
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("Trace active: ").append(currentTrace.toString()).append("\n");
+
+            DebuggerControlService control = getControlService();
+            if (control != null) {
+                sb.append("Control service: available\n");
+            }
+
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService != null) {
+                var bps = bpService.getAllBreakpoints();
+                sb.append("Breakpoints: ").append(bps != null ? bps.size() : 0).append("\n");
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error getting status: " + e.getMessage();
+        }
+    }
+
+    // ----------------------------------------------------------------------------------
 
 /**
  * List all defined strings in the program with their addresses

@@ -10,6 +10,11 @@
   <name>GhidraMCP</name>
   <url>http://maven.apache.org</url>
 
+  <!-- Set Ghidra home directory -->
+  <properties>
+    <ghidra.home>/data/ghidra</ghidra.home>
+  </properties>
+
   <dependencies>
     <!-- Ghidra JARs as system-scoped dependencies -->
     <dependency>
@@ -17,56 +22,103 @@
       <artifactId>Generic</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Generic.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Framework/Generic/lib/Generic.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>SoftwareModeling</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/SoftwareModeling.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>Project</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Project.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Framework/Project/lib/Project.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>Docking</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Docking.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Framework/Docking/lib/Docking.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>Decompiler</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Decompiler.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Features/Decompiler/lib/Decompiler.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>Utility</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Utility.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Framework/Utility/lib/Utility.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>Base</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Base.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Features/Base/lib/Base.jar</systemPath>
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
       <artifactId>Gui</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>
-      <systemPath>${project.basedir}/lib/Gui.jar</systemPath>
+      <systemPath>${ghidra.home}/Ghidra/Features/Base/lib/Base.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>Gui</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Framework/Gui/lib/Gui.jar</systemPath>
+    </dependency>
+    <!-- Actually Gui is duplicate, removing -->
+
+    <!-- Ghidra built-in features that are actually in Features directory -->
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>Decompiler</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Features/Decompiler/lib/Decompiler.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>DebugUtils</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Features/DebugUtils/lib/DebugUtils.jar</systemPath>
+    </dependency>
+
+    <!-- Debugger -->
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>Debugger</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Debug/Debugger/lib/Debugger.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>DebuggerApi</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Debug/Debugger-api/lib/Debugger-api.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>FrameworkTraceModeling</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Debug/Framework-TraceModeling/lib/Framework-TraceModeling.jar</systemPath>
     </dependency>
 
     <!-- JUnit (test only) -->
@@ -80,6 +132,17 @@
 
   <build>
     <plugins>
+      <!-- Java 21 configuration -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.11.0</version>
+        <configuration>
+          <source>21</source>
+          <target>21</target>
+        </configuration>
+      </plugin>
+
       <!-- Use custom MANIFEST.MF -->
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>

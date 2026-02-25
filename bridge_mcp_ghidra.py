@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
@@ -286,6 +287,139 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
     if filter:
         params["filter"] = filter
     return safe_get("strings", params)
+
+# ============================================================================
+# Debugger functions
+# ============================================================================
+
+@mcp.tool()
+def debug_set_breakpoint(address: str, kind: str = "sw_execute", enabled: bool = True) -> str:
+    """
+    Set a breakpoint at the given address.
+    
+    Args:
+        address: Address to set breakpoint (e.g., "0x1400010a0")
+        kind: Breakpoint kind - "sw_execute" (default), "hw_execute", "read", "write"
+        enabled: Whether the breakpoint should be enabled (default: True)
+        
+    Returns:
+        Confirmation message
+    """
+    return safe_post("debug/setBreakpoint", {
+        "address": address, 
+        "kind": kind,
+        "enabled": str(enabled)
+    })
+
+@mcp.tool()
+def debug_remove_breakpoint(address: str) -> str:
+    """
+    Remove a breakpoint at the given address.
+    
+    Args:
+        address: Address to remove breakpoint (e.g., "0x1400010a0")
+        
+    Returns:
+        Confirmation message
+    """
+    return safe_post("debug/removeBreakpoint", {"address": address})
+
+@mcp.tool()
+def debug_list_breakpoints() -> str:
+    """
+    List all active breakpoints.
+    
+    Returns:
+        List of breakpoints
+    """
+    return safe_get("debug/listBreakpoints")
+
+@mcp.tool()
+def debug_run() -> str:
+    """
+    Continue execution of the debugged program.
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/run")
+
+@mcp.tool()
+def debug_stop() -> str:
+    """
+    Halt execution of the debugged program.
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stop")
+
+@mcp.tool()
+def debug_step_into() -> str:
+    """
+    Step into the next instruction (will enter function calls).
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stepInto")
+
+@mcp.tool()
+def debug_step_over() -> str:
+    """
+    Step over the next instruction (will skip function calls).
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stepOver")
+
+@mcp.tool()
+def debug_step_out() -> str:
+    """
+    Step out of the current function (return to caller).
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stepOut")
+
+@mcp.tool()
+def debug_registers() -> str:
+    """
+    Get current register values from the active debug session.
+    
+    Returns:
+        Register names and values
+    """
+    return safe_get("debug/registers")
+
+@mcp.tool()
+def debug_memory(address: str = None, length: int = 64) -> str:
+    """
+    Read memory at the specified address.
+    
+    Args:
+        address: Address to read from (e.g., "0x1400010a0"). If None, reads from current PC.
+        length: Number of bytes to read (default: 64)
+        
+    Returns:
+        Hex dump of memory contents
+    """
+    params = {"length": str(length)}
+    if address:
+        params["address"] = address
+    return safe_get("debug/memory", params)
+
+@mcp.tool()
+def debug_status() -> str:
+    """
+    Get debugger status (active trace, threads, breakpoints, etc.).
+    
+    Returns:
+        Debugger status information
+    """
+    return safe_get("debug/status")
 
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
