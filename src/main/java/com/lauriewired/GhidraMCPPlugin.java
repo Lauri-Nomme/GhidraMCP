@@ -1548,7 +1548,15 @@ public class GhidraMCPPlugin extends Plugin {
 
             StringBuilder sb = new StringBuilder();
             for (LogicalBreakpoint bp : allBreakpoints) {
-                sb.append(bp.toString()).append("\n");
+                try {
+                    Address addr = bp.getAddress();
+                    String kinds = bp.getKinds() != null ? bp.getKinds().toString() : "unknown";
+                    sb.append("Address: ").append(addr != null ? addr.toString() : "unknown")
+                       .append(" Kinds: ").append(kinds)
+                       .append("\n");
+                } catch (Exception e) {
+                    sb.append("Breakpoint: ").append(bp.toString()).append("\n");
+                }
             }
             return sb.toString();
         } catch (Exception e) {
