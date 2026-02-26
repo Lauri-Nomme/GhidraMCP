@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 from mcp.server.fastmcp import FastMCP
 
 DEFAULT_GHIDRA_SERVER = "http://127.0.0.1:8080/"
+DEBUGGER_GHIDRA_SERVER = "http://127.0.0.1:9090/"
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,28 @@ mcp = FastMCP("ghidra-mcp")
 
 # Initialize ghidra_server_url with default value
 ghidra_server_url = DEFAULT_GHIDRA_SERVER
+debugger_server_url = DEBUGGER_GHIDRA_SERVER
+
+# Debugger endpoints that need to go to port 9090
+DEBUGGER_ENDPOINTS = {
+    "debug/setBreakpoint",
+    "debug/removeBreakpoint", 
+    "debug/listBreakpoints",
+    "debug/run",
+    "debug/stop",
+    "debug/stepInto",
+    "debug/stepOver",
+    "debug/stepOut",
+    "debug/registers",
+    "debug/memory",
+    "debug/status",
+}
+
+def get_server_url(endpoint: str) -> str:
+    """Get the appropriate server URL based on endpoint."""
+    if endpoint in DEBUGGER_ENDPOINTS:
+        return debugger_server_url
+    return ghidra_server_url
 
 def safe_get(endpoint: str, params: dict = None) -> list:
     """
@@ -31,31 +54,41 @@ def safe_get(endpoint: str, params: dict = None) -> list:
     if params is None:
         params = {}
 
-    url = urljoin(ghidra_server_url, endpoint)
+    server_url = get_server_url(endpoint)
+    url = urljoin(server_url, endpoint)
+    
+    logger.info(f"GET {url} params={params}")
 
     try:
         response = requests.get(url, params=params, timeout=5)
         response.encoding = 'utf-8'
+        logger.info(f"RESPONSE {response.status_code}: {response.text[:200] if response.text else 'empty'}")
         if response.ok:
             return response.text.splitlines()
         else:
             return [f"Error {response.status_code}: {response.text.strip()}"]
     except Exception as e:
+        logger.error(f"REQUEST FAILED: {e}")
         return [f"Request failed: {str(e)}"]
 
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
-        url = urljoin(ghidra_server_url, endpoint)
+        server_url = get_server_url(endpoint)
+        url = urljoin(server_url, endpoint)
+        logger.info(f"POST {url} data={data}")
+        
         if isinstance(data, dict):
             response = requests.post(url, data=data, timeout=5)
         else:
             response = requests.post(url, data=data.encode("utf-8"), timeout=5)
         response.encoding = 'utf-8'
+        logger.info(f"RESPONSE {response.status_code}: {response.text[:200] if response.text else 'empty'}")
         if response.ok:
             return response.text.strip()
         else:
             return f"Error {response.status_code}: {response.text.strip()}"
     except Exception as e:
+        logger.error(f"REQUEST FAILED: {e}")
         return f"Request failed: {str(e)}"
 
 @mcp.tool()
@@ -440,13 +473,13 @@ def main():
     
     if args.transport == "sse":
         try:
-            # Set up logging
-            log_level = logging.INFO
-            logging.basicConfig(level=log_level)
+            # Set up logging - use DEBUG for verbose output
+            log_level = logging.DEBUG
+            logging.basicConfig(level=log_level, format='%(asctime)s %(levelname)s %(message)s')
             logging.getLogger().setLevel(log_level)
 
             # Configure MCP settings
-            mcp.settings.log_level = "INFO"
+            mcp.settings.log_level = "DEBUG"
             if args.mcp_host:
                 mcp.settings.host = args.mcp_host
             else:
@@ -457,9 +490,10 @@ def main():
             else:
                 mcp.settings.port = 8081
 
-            logger.info(f"Connecting to Ghidra server at {ghidra_server_url}")
             logger.info(f"Starting MCP server on http://{mcp.settings.host}:{mcp.settings.port}/sse")
             logger.info(f"Using transport: {args.transport}")
+            logger.info(f"CodeBrowser endpoints -> {ghidra_server_url}")
+            logger.info(f"Debugger endpoints -> {debugger_server_url}")
 
             mcp.run(transport="sse")
         except KeyboardInterrupt:

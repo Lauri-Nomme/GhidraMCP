@@ -84,31 +84,51 @@ public class GhidraMCPPlugin extends Plugin {
     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
     private static final String PORT_OPTION_NAME = "Server Port";
     private static final int DEFAULT_PORT = 8080;
-
+    private static final int DEBUGGER_PORT = 9090;
+    private static boolean codeBrowserServerStarted = false;
+    private static boolean debuggerServerStarted = false;
+    
     public GhidraMCPPlugin(PluginTool tool) {
         super(tool);
-        Msg.info(this, "GhidraMCPPlugin loading...");
-
-        // Register the configuration option
-        Options options = tool.getOptions(OPTION_CATEGORY_NAME);
-        options.registerOption(PORT_OPTION_NAME, DEFAULT_PORT,
-            null, // No help location for now
-            "The network port number the embedded HTTP server will listen on. " +
-            "Requires Ghidra restart or plugin reload to take effect after changing.");
-
-        try {
-            startServer();
+        
+        // Check if we're in Debugger tool (different tool name)
+        String toolName = tool.getName();
+        boolean isDebugger = toolName != null && (
+            toolName.toLowerCase().contains("debug") || 
+            toolName.equals("Debugger") ||
+            toolName.contains("Trace")
+        );
+        
+        int port = isDebugger ? DEBUGGER_PORT : DEFAULT_PORT;
+        boolean isAlreadyStarted = isDebugger ? debuggerServerStarted : codeBrowserServerStarted;
+        
+        Msg.info(this, "GhidraMCPPlugin loading in tool: '" + toolName + "' (isDebugger=" + isDebugger + ") on port " + port);
+        
+        // Start server if not already started for this tool type
+        if (!isAlreadyStarted) {
+            try {
+                startServer(port);
+                if (isDebugger) {
+                    debuggerServerStarted = true;
+                } else {
+                    codeBrowserServerStarted = true;
+                }
+            } catch (IOException e) {
+                Msg.error(this, "Failed to start HTTP server", e);
+            }
+        } else {
+            Msg.info(this, "HTTP server already running on port " + port + ", skipping start");
         }
-        catch (IOException e) {
-            Msg.error(this, "Failed to start HTTP server", e);
-        }
+        
         Msg.info(this, "GhidraMCPPlugin loaded!");
     }
 
-    private void startServer() throws IOException {
-        // Read the configured port
+    private void startServer(int port) throws IOException {
+        // Allow override via config
         Options options = tool.getOptions(OPTION_CATEGORY_NAME);
-        int port = options.getInt(PORT_OPTION_NAME, DEFAULT_PORT);
+        int configuredPort = options.getInt(PORT_OPTION_NAME, port);
+        
+        Msg.info(this, "Starting HTTP server on port " + configuredPort);
 
         // Stop existing server if running (e.g., if plugin is reloaded)
         if (server != null) {
@@ -117,7 +137,7 @@ public class GhidraMCPPlugin extends Plugin {
             server = null;
         }
 
-        server = HttpServer.create(new InetSocketAddress(port), 0);
+        server = HttpServer.create(new InetSocketAddress(configuredPort), 0);
 
         // Each listing endpoint uses offset & limit from query params:
         server.createContext("/methods", exchange -> {
