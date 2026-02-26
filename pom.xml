@@ -115,6 +115,13 @@
     </dependency>
     <dependency>
       <groupId>ghidra</groupId>
+      <artifactId>DebuggerRmiTrace</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.home}/Ghidra/Debug/Debugger-rmi-trace/lib/Debugger-rmi-trace.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
       <artifactId>FrameworkTraceModeling</artifactId>
       <version>11.3.2</version>
       <scope>system</scope>

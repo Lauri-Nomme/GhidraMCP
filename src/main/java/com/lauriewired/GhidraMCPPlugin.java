@@ -56,6 +56,11 @@ import ghidra.trace.model.context.TraceRegisterContextSpace;
 import ghidra.program.model.lang.Language;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.lang.RegisterValue;
+import ghidra.debug.api.target.ActionName;
+import ghidra.debug.api.target.Target;
+import ghidra.debug.api.tracemgr.DebuggerCoordinates;
+import ghidra.trace.model.target.TraceObject;
+import docking.ActionContext;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -1565,75 +1570,127 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Continue execution - note: Ghidra API doesn't support programmatic run
-     * Use Ghidra Debugger UI or gdb console to continue
+     * Continue/resume execution using Target API
      */
     private String debugRun() {
         try {
-            DebuggerTraceManagerService traces = getTraceManagerService();
-            if (traces == null) return "Error: No trace manager";
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
 
-            ghidra.trace.model.Trace currentTrace = traces.getCurrentTrace();
-            if (currentTrace == null) return "Error: No active trace";
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
 
-            // Try to get target and send continue command
-            DebuggerTargetService targetService = tool.getService(DebuggerTargetService.class);
-            if (targetService != null) {
-                var targets = targetService.getAllTargets();
-                // Could iterate targets and send commands...
-            }
-            
-            return "To continue execution, use Ghidra Debugger UI 'Run' button or gdb console 'continue' command";
+            var actions = target.collectActions(ActionName.RESUME, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No resume action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get resume action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "Resume command sent";
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "Error resuming: " + e.getMessage();
         }
     }
 
     /**
-     * Stop execution - note: Ghidra API doesn't support programmatic stop
-     * Use Ghidra Debugger UI or gdb console to stop
+     * Stop/interrupt execution using Target API
      */
     private String debugStop() {
         try {
-            return "To stop execution, use Ghidra Debugger UI 'Pause' button or gdb console 'interrupt' command";
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.INTERRUPT, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No interrupt action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get interrupt action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "Interrupt command sent";
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "Error interrupting: " + e.getMessage();
         }
     }
 
     /**
-     * Step into - note: Ghidra API doesn't support programmatic step
-     * Use Ghidra Debugger UI or gdb console to step
+     * Step into using Target API
      */
     private String debugStepInto() {
         try {
-            return "To step, use Ghidra Debugger UI 'Step Into' button or gdb console 'stepi' command";
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.STEP_INTO, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No step_into action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get step_into action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "StepInto command sent";
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "Error stepping into: " + e.getMessage();
         }
     }
 
     /**
-     * Step over - note: Ghidra API doesn't support programmatic step
-     * Use Ghidra Debugger UI or gdb console to step
+     * Step over using Target API
      */
     private String debugStepOver() {
         try {
-            return "To step over, use Ghidra Debugger UI 'Step Over' button or gdb console 'nexti' command";
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.STEP_OVER, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No step_over action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get step_over action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "StepOver command sent";
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "Error stepping over: " + e.getMessage();
         }
     }
 
     /**
-     * Step out - note: Ghidra API doesn't support programmatic step
-     * Use Ghidra Debugger UI or gdb console to step
+     * Step out using Target API
      */
     private String debugStepOut() {
         try {
-            return "To step out, use Ghidra Debugger UI 'Step Out' button or gdb console 'finish' command";
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.STEP_OUT, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No step_out action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get step_out action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "StepOut command sent";
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "Error stepping out: " + e.getMessage();
         }
     }
 
