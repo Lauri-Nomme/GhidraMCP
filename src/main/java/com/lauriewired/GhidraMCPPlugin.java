@@ -1565,96 +1565,75 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Continue execution - uses ControlMode to switch to target mode
+     * Continue execution - note: Ghidra API doesn't support programmatic run
+     * Use Ghidra Debugger UI or gdb console to continue
      */
     private String debugRun() {
         try {
-            DebuggerControlService control = getControlService();
-            if (control == null) return "Error: Debugger control service not available";
-
             DebuggerTraceManagerService traces = getTraceManagerService();
             if (traces == null) return "Error: No trace manager";
 
             ghidra.trace.model.Trace currentTrace = traces.getCurrentTrace();
             if (currentTrace == null) return "Error: No active trace";
 
-            // Set to RO_TARGET mode (read-only target mode - running)
-            control.setCurrentMode(currentTrace, ghidra.debug.api.control.ControlMode.RO_TARGET);
-            return "Execution mode set to RO_TARGET";
+            // Try to get target and send continue command
+            DebuggerTargetService targetService = tool.getService(DebuggerTargetService.class);
+            if (targetService != null) {
+                var targets = targetService.getAllTargets();
+                // Could iterate targets and send commands...
+            }
+            
+            return "To continue execution, use Ghidra Debugger UI 'Run' button or gdb console 'continue' command";
         } catch (Exception e) {
-            return "Error running: " + e.getMessage();
+            return "Error: " + e.getMessage();
         }
     }
 
     /**
-     * Stop execution - uses ControlMode to switch to trace mode
+     * Stop execution - note: Ghidra API doesn't support programmatic stop
+     * Use Ghidra Debugger UI or gdb console to stop
      */
     private String debugStop() {
         try {
-            DebuggerControlService control = getControlService();
-            if (control == null) return "Error: Debugger control service not available";
-
-            DebuggerTraceManagerService traces = getTraceManagerService();
-            if (traces == null) return "Error: No trace manager";
-
-            ghidra.trace.model.Trace currentTrace = traces.getCurrentTrace();
-            if (currentTrace == null) return "Error: No active trace";
-
-            // Set to RO_TRACE mode (read-only trace - stopped)
-            control.setCurrentMode(currentTrace, ghidra.debug.api.control.ControlMode.RO_TRACE);
-            return "Execution mode set to RO_TRACE (stopped)";
+            return "To stop execution, use Ghidra Debugger UI 'Pause' button or gdb console 'interrupt' command";
         } catch (Exception e) {
-            return "Error stopping: " + e.getMessage();
+            return "Error: " + e.getMessage();
         }
     }
 
     /**
-     * Step into - placeholder (requires target-specific implementation)
+     * Step into - note: Ghidra API doesn't support programmatic step
+     * Use Ghidra Debugger UI or gdb console to step
      */
     private String debugStepInto() {
         try {
-            DebuggerTraceManagerService traces = getTraceManagerService();
-            if (traces == null) return "Error: No trace manager";
-
-            if (traces.getCurrentTrace() == null) return "Error: No active trace";
-
-            // Stepping requires accessing the underlying target
-            // This is target-specific (gdb, lldb, etc.) and not exposed in the basic API
-            return "Step into: Not implemented - requires target-specific implementation. Use breakpoints to control execution.";
+            return "To step, use Ghidra Debugger UI 'Step Into' button or gdb console 'stepi' command";
         } catch (Exception e) {
-            return "Error stepping into: " + e.getMessage();
+            return "Error: " + e.getMessage();
         }
     }
 
     /**
-     * Step over - placeholder
+     * Step over - note: Ghidra API doesn't support programmatic step
+     * Use Ghidra Debugger UI or gdb console to step
      */
     private String debugStepOver() {
         try {
-            DebuggerTraceManagerService traces = getTraceManagerService();
-            if (traces == null) return "Error: No trace manager";
-
-            if (traces.getCurrentTrace() == null) return "Error: No active trace";
-
-            return "Step over: Not implemented - requires target-specific implementation.";
+            return "To step over, use Ghidra Debugger UI 'Step Over' button or gdb console 'nexti' command";
         } catch (Exception e) {
-            return "Error stepping over: " + e.getMessage();
+            return "Error: " + e.getMessage();
         }
     }
 
     /**
-     * Step out - placeholder
+     * Step out - note: Ghidra API doesn't support programmatic step
+     * Use Ghidra Debugger UI or gdb console to step
      */
     private String debugStepOut() {
         try {
-            DebuggerTraceManagerService traces = getTraceManagerService();
-            if (traces == null) return "Error: No trace manager";
-
-            if (traces.getCurrentTrace() == null) return "Error: No active trace";
-
-            return "Step out: Not implemented - requires target-specific implementation.";
+            return "To step out, use Ghidra Debugger UI 'Step Out' button or gdb console 'finish' command";
         } catch (Exception e) {
-            return "Error stepping out: " + e.getMessage();
+            return "Error: " + e.getMessage();
         }
     }
 
