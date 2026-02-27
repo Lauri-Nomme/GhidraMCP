@@ -1,5 +1,7 @@
 package com.lauriewired;
 
+import java.math.BigInteger;
+
 import ghidra.framework.plugintool.Plugin;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.address.Address;
@@ -1621,6 +1623,7 @@ public class GhidraMCPPlugin extends Plugin {
 
     /**
      * Step into using Target API
+     * Note: Requires thread context - may fail if no thread selected in debugger UI
      */
     private String debugStepInto() {
         try {
@@ -1631,14 +1634,21 @@ public class GhidraMCPPlugin extends Plugin {
             Target target = current.getTarget();
             if (target == null) return "Error: No active target";
 
+            // Try STEP_INTO first (requires thread context)
             var actions = target.collectActions(ActionName.STEP_INTO, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
-            if (actions.isEmpty()) return "Error: No step_into action available";
+            if (!actions.isEmpty()) {
+                Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+                if (entry != null) {
+                    entry.invokeAsyncWithoutTimeout(false);
+                    return "StepInto command sent";
+                }
+            }
 
-            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
-            if (entry == null) return "Error: Could not get step_into action entry";
+            // Fallback: Try EXECUTE action (will need cmd parameter)
+            var execActions = target.collectActions(ActionName.EXECUTE, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (execActions.isEmpty()) return "Error: No step or execute action available";
 
-            entry.invokeAsyncWithoutTimeout(false);
-            return "StepInto command sent";
+            return "Step requires thread selection in debugger UI - use Ghidra to select thread first";
         } catch (Exception e) {
             return "Error stepping into: " + e.getMessage();
         }
@@ -1705,32 +1715,68 @@ public class GhidraMCPPlugin extends Plugin {
             Trace currentTrace = traces.getCurrentTrace();
             if (currentTrace == null) return "Error: No active trace";
 
-            TraceThread thread = traces.getCurrentThread();
-            if (thread == null) return "Error: No current thread";
-
-            long snap = traces.getCurrentSnap();
-            
-            Language language = currentTrace.getBaseLanguage();
-            TraceRegisterContextManager regCtxMgr = currentTrace.getRegisterContextManager();
-            TraceRegisterContextSpace regSpace = regCtxMgr.getRegisterContextRegisterSpace(thread, false);
-            
-            if (regSpace == null) return "Error: No register context space";
-
-            StringBuilder sb = new StringBuilder();
-            
-            // Get all registers from the language
-            for (Register reg : language.getRegisters()) {
-                RegisterValue regVal = regSpace.getValueWithDefault(null, reg, snap, null);
-                if (regVal != null) {
-                    sb.append(reg.getName()).append(": ").append(regVal.toString()).append("\n");
+            DebuggerCoordinates coords = traces.getCurrent();
+            TraceThread thread = coords.getThread();
+            if (thread == null) {
+                var threadMgr = currentTrace.getThreadManager();
+                var threads = threadMgr.getAllThreads();
+                if (!threads.isEmpty()) {
+                    thread = threads.iterator().next();
                 }
             }
-
-            String result = sb.toString();
-            if (result.isEmpty()) {
-                return "No register values available";
+            if (thread == null) {
+                return "Error: No thread found";
             }
-            return result;
+
+            int frame = coords.getFrame();
+            long snap = coords.getViewSnap();  // Use getViewSnap() like the UI does
+            
+            var platform = coords.getPlatform();
+            if (platform != null) {
+                Language language = platform.getLanguage();
+                
+                var memMgr = currentTrace.getMemoryManager();
+                
+                var memSpace = memMgr.getMemoryRegisterSpace(thread, frame, false);
+                if (memSpace == null) {
+                    memSpace = memMgr.getMemoryRegisterSpace(thread, 0, false);
+                }
+                
+                StringBuilder sb = new StringBuilder();
+                sb.append("Thread: ").append(thread.toString()).append("\n");
+                sb.append("Frame: ").append(frame).append("\n");
+                sb.append("Snap: ").append(snap).append("\n");
+                
+                if (memSpace != null) {
+                    sb.append("\nRegister values:\n");
+                    int count = 0;
+                    for (Register reg : language.getRegisters()) {
+                        if (reg.isBaseRegister()) {
+                            try {
+                                // Use getViewValue() like the UI does (line 866 in DebuggerRegistersProvider)
+                                RegisterValue regVal = memSpace.getViewValue(platform, snap, reg);
+                                if (regVal != null && regVal.hasValue()) {
+                                    BigInteger value = regVal.getUnsignedValue();
+                                    sb.append(reg.getName()).append("=").append(String.format("0x%x", value)).append(" ");
+                                    count++;
+                                    if (count >= 4) {
+                                        sb.append("\n");
+                                        count = 0;
+                                    }
+                                }
+                            } catch (Exception e) {
+                                // Skip this register
+                            }
+                        }
+                    }
+                } else {
+                    sb.append("\nNo memory register space.\n");
+                }
+                
+                return sb.toString();
+            }
+            
+            return "Check GDB console for register values.";
         } catch (Exception e) {
             return "Error getting registers: " + e.getMessage();
         }

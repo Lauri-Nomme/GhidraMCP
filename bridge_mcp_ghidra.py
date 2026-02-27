@@ -47,7 +47,7 @@ def get_server_url(endpoint: str) -> str:
         return debugger_server_url
     return ghidra_server_url
 
-def safe_get(endpoint: str, params: dict = None) -> list:
+def safe_get(endpoint: str, params: dict = None) -> str:
     """
     Perform a GET request with optional query parameters.
     """
@@ -62,14 +62,14 @@ def safe_get(endpoint: str, params: dict = None) -> list:
     try:
         response = requests.get(url, params=params, timeout=5)
         response.encoding = 'utf-8'
-        logger.info(f"RESPONSE {response.status_code}: {response.text[:200] if response.text else 'empty'}")
+        logger.info(f"RESPONSE {response.status_code}: {response.text[:65535] if response.text else 'empty'}")
         if response.ok:
-            return response.text.splitlines()
+            return response.text
         else:
-            return [f"Error {response.status_code}: {response.text.strip()}"]
+            return f"Error {response.status_code}: {response.text.strip()}"
     except Exception as e:
         logger.error(f"REQUEST FAILED: {e}")
-        return [f"Request failed: {str(e)}"]
+        return f"Request failed: {str(e)}"
 
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
@@ -82,7 +82,7 @@ def safe_post(endpoint: str, data: dict | str) -> str:
         else:
             response = requests.post(url, data=data.encode("utf-8"), timeout=5)
         response.encoding = 'utf-8'
-        logger.info(f"RESPONSE {response.status_code}: {response.text[:200] if response.text else 'empty'}")
+        logger.info(f"RESPONSE {response.status_code}: {response.text[:65535] if response.text else 'empty'}")
         if response.ok:
             return response.text.strip()
         else:
@@ -474,12 +474,12 @@ def main():
     if args.transport == "sse":
         try:
             # Set up logging - use DEBUG for verbose output
-            log_level = logging.DEBUG
+            log_level = logging.INFO
             logging.basicConfig(level=log_level, format='%(asctime)s %(levelname)s %(message)s')
             logging.getLogger().setLevel(log_level)
 
             # Configure MCP settings
-            mcp.settings.log_level = "DEBUG"
+            mcp.settings.log_level = "INFO"
             if args.mcp_host:
                 mcp.settings.host = args.mcp_host
             else:
