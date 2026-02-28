@@ -509,6 +509,7 @@ def main():
 
             # Configure MCP settings
             mcp.settings.log_level = "INFO"
+            mcp.settings.transport_security.enable_dns_rebinding_protection = False
             if args.mcp_host:
                 mcp.settings.host = args.mcp_host
             else:
