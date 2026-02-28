@@ -189,16 +189,16 @@ def get_function_by_address(address: str) -> str:
     return "\n".join(safe_get("get_function_by_address", {"address": address}))
 
 @mcp.tool()
-def get_current_address() -> str:
+def get_codebrowser_address() -> str:
     """
-    Get the address currently selected by the user.
+    Get the address active in CodeBrowser tool. (NOT debugging session)
     """
     return "\n".join(safe_get("get_current_address"))
 
 @mcp.tool()
 def get_current_function() -> str:
     """
-    Get the function currently selected by the user.
+    Get the function active in CodeBrowser tool. (NOT debugging session)
     """
     return "\n".join(safe_get("get_current_function"))
 
