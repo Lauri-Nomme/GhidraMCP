@@ -187,7 +187,7 @@ def get_function_by_address(address: str) -> str:
     """
     Get a function by its address.
     """
-    return "\n".join(safe_get("get_function_by_address", {"address": address}))
+    return safe_get("get_function_by_address", {"address": address})
 
 @mcp.tool()
 def get_codebrowser_cursor_address() -> str:
@@ -199,7 +199,7 @@ def get_codebrowser_cursor_address() -> str:
     
     For the current execution address in a debug session, use debug_get_rip() instead.
     """
-    return "\n".join(safe_get("get_codebrowser_cursor_address"))
+    return safe_get("get_codebrowser_cursor_address")
 
 @mcp.tool()
 def get_codebrowser_cursor_function() -> str:
@@ -212,7 +212,7 @@ def get_codebrowser_cursor_function() -> str:
     For the current execution address in a debug session, use debug_get_rip() to get
     the instruction pointer, then look up the function containing that address.
     """
-    return "\n".join(safe_get("get_codebrowser_cursor_function"))
+    return safe_get("get_codebrowser_cursor_function")
 
 @mcp.tool()
 def list_functions() -> list:
@@ -226,7 +226,7 @@ def decompile_function_by_address(address: str) -> str:
     """
     Decompile a function at the given address.
     """
-    return "\n".join(safe_get("decompile_function", {"address": address}))
+    return safe_get("decompile_function", {"address": address})
 
 @mcp.tool()
 def disassemble_function(address: str) -> list:
