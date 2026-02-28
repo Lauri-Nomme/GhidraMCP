@@ -1540,8 +1540,18 @@ public class GhidraMCPPlugin extends Plugin {
             // Get breakpoints at this address
             var breakpoints = bpService.getBreakpointsAt(program, addr);
             if (breakpoints != null && !breakpoints.isEmpty()) {
-                // Delete all at this address - need a Trace for deleteAll
-                return "Breakpoint removal requires active debug session (Trace)";
+                // Delete all breakpoints at this address
+                int removed = 0;
+                for (LogicalBreakpoint bp : breakpoints) {
+                    try {
+                        // delete() returns CompletableFuture<Void>, wait for completion
+                        bp.delete().get();
+                        removed++;
+                    } catch (Exception e) {
+                        return "Error deleting breakpoint: " + e.getMessage();
+                    }
+                }
+                return "Removed " + removed + " breakpoint(s) at " + addressStr;
             }
 
             return "No breakpoint found at " + addressStr;
