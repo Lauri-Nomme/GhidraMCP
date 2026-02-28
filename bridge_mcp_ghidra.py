@@ -444,12 +444,22 @@ def debug_memory(address: str = None, length: int = 64) -> str:
     """
     Read memory at the specified address.
     
+    This function intelligently handles both static and runtime addresses:
+    - If a debugger trace is active, it reads from trace memory and automatically
+      handles runtime virtual addresses (e.g., "0x555555554000")
+    - If no debugger is active, it reads from static program memory and requires
+      static addresses without PIE base
+    
+    When debugging PIE executables, you can pass register values directly
+    (e.g., the value of RIP) and the trace will map them correctly.
+    
     Args:
-        address: Address to read from (e.g., "0x1400010a0"). If None, reads from current PC.
+        address: Address to read from (e.g., "0x5555557344c0" for runtime VA,
+                 or "0x001e04c0" for static). If None, reads from current PC.
         length: Number of bytes to read (default: 64)
         
     Returns:
-        Hex dump of memory contents
+        Hex dump of memory contents with source indicator (trace/program)
     """
     params = {"length": str(length)}
     if address:

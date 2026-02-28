@@ -55,9 +55,11 @@ import ghidra.trace.model.Trace;
 import ghidra.trace.model.thread.TraceThread;
 import ghidra.trace.model.context.TraceRegisterContextManager;
 import ghidra.trace.model.context.TraceRegisterContextSpace;
+import ghidra.trace.model.memory.TraceMemoryManager;
 import ghidra.program.model.lang.Language;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.lang.RegisterValue;
+import java.nio.ByteBuffer;
 import ghidra.debug.api.target.ActionName;
 import ghidra.debug.api.target.Target;
 import ghidra.debug.api.tracemgr.DebuggerCoordinates;
@@ -1792,20 +1794,68 @@ public class GhidraMCPPlugin extends Plugin {
 
     /**
      * Read memory at address
-     * Note: Simplified version - full implementation would use trace API
+     * 
+     * This method intelligently handles both static and dynamic memory access:
+     * - If a debugger trace is active, reads from trace memory (supports runtime addresses)
+     * - Otherwise, reads from static program memory (requires static addresses)
+     * 
+     * For runtime addresses (e.g., 0x555555554000+), the trace automatically handles
+     * the mapping to the correct memory location.
      */
     private String getMemory(String addressStr, int length) {
+        try {
+            // First, try to use trace memory if debugger is active
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces != null) {
+                Trace currentTrace = traces.getCurrentTrace();
+                if (currentTrace != null) {
+                    // Debugger session active - use trace memory
+                    return getMemoryFromTrace(currentTrace, traces.getCurrent().getViewSnap(), addressStr, length);
+                }
+            }
+
+            // No debugger session - fall back to static program memory
+            return getMemoryFromProgram(addressStr, length);
+        } catch (Exception e) {
+            return "Error reading memory: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Read memory from an active trace (debugger session)
+     * Handles runtime virtual addresses automatically
+     */
+    private String getMemoryFromTrace(Trace trace, long snap, String addressStr, int length) {
+        try {
+            // Parse the address - trace handles both static and runtime addresses
+            Address addr = trace.getBaseAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            // Read from trace memory
+            TraceMemoryManager memMgr = trace.getMemoryManager();
+            byte[] data = new byte[length];
+            ByteBuffer buf = ByteBuffer.wrap(data);
+            int bytesRead = memMgr.getViewBytes(snap, addr, buf);
+
+            if (bytesRead <= 0) return "Error: Could not read memory at " + addr + " (snap=" + snap + ")";
+
+            return formatMemoryDump(addr, data, bytesRead, "trace");
+        } catch (Exception e) {
+            return "Error reading trace memory: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Read memory from static program (no debugger session)
+     * Requires static addresses without PIE base
+     */
+    private String getMemoryFromProgram(String addressStr, int length) {
         try {
             Program program = getCurrentProgram();
             if (program == null) return "Error: No program loaded";
 
-            Address addr;
-            if (addressStr != null && !addressStr.isEmpty()) {
-                addr = program.getAddressFactory().getAddress(addressStr);
-                if (addr == null) return "Error: Invalid address: " + addressStr;
-            } else {
-                return "Error: Address required";
-            }
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
 
             // Read from program memory
             byte[] data = new byte[length];
@@ -1813,33 +1863,41 @@ public class GhidraMCPPlugin extends Plugin {
 
             if (bytesRead <= 0) return "Error: Could not read memory at " + addr;
 
-            StringBuilder sb = new StringBuilder();
-            sb.append("Address: ").append(addr).append("\n");
-            sb.append("Bytes read: ").append(bytesRead).append("\n\n");
-
-            for (int i = 0; i < bytesRead; i += 16) {
-                sb.append(String.format("%08x: ", i));
-                for (int j = 0; j < 16; j++) {
-                    if (i + j < bytesRead) {
-                        sb.append(String.format("%02x ", data[i + j] & 0xFF));
-                    } else {
-                        sb.append("   ");
-                    }
-                    if (j == 7) sb.append(" ");
-                }
-                sb.append(" |");
-                for (int j = 0; j < 16 && i + j < bytesRead; j++) {
-                    byte b = data[i + j];
-                    char c = (b >= 32 && b < 127) ? (char) b : '.';
-                    sb.append(c);
-                }
-                sb.append("|\n");
-            }
-
-            return sb.toString();
+            return formatMemoryDump(addr, data, bytesRead, "program");
         } catch (Exception e) {
-            return "Error reading memory: " + e.getMessage();
+            return "Error reading program memory: " + e.getMessage();
         }
+    }
+
+    /**
+     * Format memory dump in hex + ASCII format
+     */
+    private String formatMemoryDump(Address addr, byte[] data, int bytesRead, String source) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Address: ").append(addr).append("\n");
+        sb.append("Source: ").append(source).append("\n");
+        sb.append("Bytes read: ").append(bytesRead).append("\n\n");
+
+        for (int i = 0; i < bytesRead; i += 16) {
+            sb.append(String.format("%08x: ", i));
+            for (int j = 0; j < 16; j++) {
+                if (i + j < bytesRead) {
+                    sb.append(String.format("%02x ", data[i + j] & 0xFF));
+                } else {
+                    sb.append("   ");
+                }
+                if (j == 7) sb.append(" ");
+            }
+            sb.append(" |");
+            for (int j = 0; j < 16 && i + j < bytesRead; j++) {
+                byte b = data[i + j];
+                char c = (b >= 32 && b < 127) ? (char) b : '.';
+                sb.append(c);
+            }
+            sb.append("|\n");
+        }
+
+        return sb.toString();
     }
 
     /**
