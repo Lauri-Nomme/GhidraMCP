@@ -1793,14 +1793,7 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Read memory at address
-     * 
-     * This method intelligently handles both static and dynamic memory access:
-     * - If a debugger trace is active, reads from trace memory (supports runtime addresses)
-     * - Otherwise, reads from static program memory (requires static addresses)
-     * 
-     * For runtime addresses (e.g., 0x555555554000+), the trace automatically handles
-     * the mapping to the correct memory location.
+     * Read memory. Uses trace memory if debugging (handles runtime VAs), else static program memory.
      */
     private String getMemory(String addressStr, int length) {
         try {
@@ -1821,10 +1814,7 @@ public class GhidraMCPPlugin extends Plugin {
         }
     }
 
-    /**
-     * Read memory from an active trace (debugger session)
-     * Handles runtime virtual addresses automatically
-     */
+    /** Read from trace memory (handles runtime VAs) */
     private String getMemoryFromTrace(Trace trace, long snap, String addressStr, int length) {
         try {
             // Parse the address - trace handles both static and runtime addresses
@@ -1845,10 +1835,7 @@ public class GhidraMCPPlugin extends Plugin {
         }
     }
 
-    /**
-     * Read memory from static program (no debugger session)
-     * Requires static addresses without PIE base
-     */
+    /** Read from static program memory (requires static addresses) */
     private String getMemoryFromProgram(String addressStr, int length) {
         try {
             Program program = getCurrentProgram();
@@ -1869,9 +1856,7 @@ public class GhidraMCPPlugin extends Plugin {
         }
     }
 
-    /**
-     * Format memory dump in hex + ASCII format
-     */
+    /** Format memory dump in hex + ASCII */
     private String formatMemoryDump(Address addr, byte[] data, int bytesRead, String source) {
         StringBuilder sb = new StringBuilder();
         sb.append("Address: ").append(addr).append("\n");
