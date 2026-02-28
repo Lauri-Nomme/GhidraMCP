@@ -1821,10 +1821,15 @@ public class GhidraMCPPlugin extends Plugin {
             Address addr = trace.getBaseAddressFactory().getAddress(addressStr);
             if (addr == null) return "Error: Invalid address: " + addressStr;
 
-            // Read from trace memory
+            // Read from trace memory - following the pattern from CachedBytePage.java
             TraceMemoryManager memMgr = trace.getMemoryManager();
             byte[] data = new byte[length];
             ByteBuffer buf = ByteBuffer.wrap(data);
+            
+            // CRITICAL: Must call clear() before getViewBytes, per Ghidra's CachedBytePage pattern
+            // This resets position to 0 and limit to capacity so the buffer is writable
+            buf.clear();
+            
             int bytesRead = memMgr.getViewBytes(snap, addr, buf);
 
             if (bytesRead <= 0) return "Error: Could not read memory at " + addr + " (snap=" + snap + ")";
