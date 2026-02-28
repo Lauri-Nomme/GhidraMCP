@@ -1831,6 +1831,31 @@ public class GhidraMCPPlugin extends Plugin {
             Address addr = trace.getBaseAddressFactory().getAddress(addressStr);
             if (addr == null) return "Error: Invalid address: " + addressStr;
 
+            // Try to read from live target first (captures memory on-demand)
+            // This is necessary because trace memory only contains bytes that have been
+            // explicitly recorded (state = KNOWN). Heap regions often haven't been captured.
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager != null) {
+                DebuggerCoordinates current = traceManager.getCurrent();
+                Target target = current.getTarget();
+                if (target != null && target.isValid()) {
+                    try {
+                        // Create address range for the memory we want to read
+                        ghidra.program.model.address.AddressSet addrSet = 
+                            new ghidra.program.model.address.AddressSet(addr, addr.add(length - 1));
+                        
+                        // Read from live target - this captures into the trace
+                        target.readMemory(addrSet, null);
+                        
+                        // Small delay to let the memory be recorded into trace
+                        Thread.sleep(100);
+                    } catch (Exception e) {
+                        // If live read fails, fall back to trace memory below
+                        // This can happen if target is paused or disconnected
+                    }
+                }
+            }
+
             // Read from trace memory - following the pattern from CachedBytePage.java
             TraceMemoryManager memMgr = trace.getMemoryManager();
             byte[] data = new byte[length];
