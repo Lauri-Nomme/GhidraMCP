@@ -39,6 +39,7 @@ DEBUGGER_ENDPOINTS = {
     "debug/registers",
     "debug/memory",
     "debug/status",
+    "debug/get_rip",
 }
 
 def get_server_url(endpoint: str) -> str:
@@ -189,18 +190,29 @@ def get_function_by_address(address: str) -> str:
     return "\n".join(safe_get("get_function_by_address", {"address": address}))
 
 @mcp.tool()
-def get_codebrowser_address() -> str:
+def get_codebrowser_cursor_address() -> str:
     """
-    Get the address active in CodeBrowser tool. (NOT debugging session)
+    Get the cursor address in the Ghidra CodeBrowser UI window.
+    
+    IMPORTANT: This is NOT the debugger instruction pointer (RIP/PC).
+    This returns the address currently selected in the CodeBrowser UI by the user.
+    
+    For the current execution address in a debug session, use debug_get_rip() instead.
     """
-    return "\n".join(safe_get("get_current_address"))
+    return "\n".join(safe_get("get_codebrowser_cursor_address"))
 
 @mcp.tool()
-def get_current_function() -> str:
+def get_codebrowser_cursor_function() -> str:
     """
-    Get the function active in CodeBrowser tool. (NOT debugging session)
+    Get the function at the cursor position in the Ghidra CodeBrowser UI window.
+    
+    IMPORTANT: This is NOT the debugger current function.
+    This returns the function containing the address currently selected in the CodeBrowser UI.
+    
+    For the current execution address in a debug session, use debug_get_rip() to get
+    the instruction pointer, then look up the function containing that address.
     """
-    return "\n".join(safe_get("get_current_function"))
+    return "\n".join(safe_get("get_codebrowser_cursor_function"))
 
 @mcp.tool()
 def list_functions() -> list:
@@ -453,6 +465,22 @@ def debug_status() -> str:
         Debugger status information
     """
     return safe_get("debug/status")
+
+@mcp.tool()
+def debug_get_rip() -> str:
+    """
+    Get the current instruction pointer (RIP/PC) from the active debug session.
+    
+    This returns the address where execution is currently stopped in the debugger.
+    The value is returned as a hex string (e.g., "0x555555e00b85").
+    
+    Use this instead of get_codebrowser_cursor_address() when you need the actual
+    execution address during debugging.
+    
+    Returns:
+        Hex address string of the current instruction pointer
+    """
+    return safe_get("debug/get_rip")
 
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")

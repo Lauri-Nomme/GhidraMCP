@@ -239,12 +239,12 @@ public class GhidraMCPPlugin extends Plugin {
             sendResponse(exchange, getFunctionByAddress(address));
         });
 
-        server.createContext("/get_current_address", exchange -> {
-            sendResponse(exchange, getCurrentAddress());
+        server.createContext("/get_codebrowser_cursor_address", exchange -> {
+            sendResponse(exchange, getCodeBrowserCursorAddress());
         });
 
-        server.createContext("/get_current_function", exchange -> {
-            sendResponse(exchange, getCurrentFunction());
+        server.createContext("/get_codebrowser_cursor_function", exchange -> {
+            sendResponse(exchange, getCodeBrowserCursorFunction());
         });
 
         server.createContext("/list_functions", exchange -> {
@@ -435,6 +435,10 @@ public class GhidraMCPPlugin extends Plugin {
 
         server.createContext("/debug/status", exchange -> {
             sendResponse(exchange, getDebugStatus());
+        });
+
+        server.createContext("/debug/get_rip", exchange -> {
+            sendResponse(exchange, getDebugRip());
         });
 
         server.setExecutor(null);
@@ -826,9 +830,11 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Get current address selected in Ghidra GUI
+     * Get current address selected in Ghidra CodeBrowser UI
+     * NOTE: This is NOT the debugger instruction pointer (RIP).
+     * Use /debug/get_rip for the current execution address in a debug session.
      */
-    private String getCurrentAddress() {
+    private String getCodeBrowserCursorAddress() {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
@@ -837,9 +843,11 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Get current function selected in Ghidra GUI
+     * Get current function selected in Ghidra CodeBrowser UI
+     * NOTE: This is NOT the debugger current function.
+     * Use /debug/get_rip to get the execution address, then look up the function.
      */
-    private String getCurrentFunction() {
+    private String getCodeBrowserCursorFunction() {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
@@ -1862,6 +1870,60 @@ public class GhidraMCPPlugin extends Plugin {
             return sb.toString();
         } catch (Exception e) {
             return "Error getting status: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Get the current instruction pointer (RIP/PC) from the active debug session
+     */
+    private String getDebugRip() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            Trace currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "Error: No active trace";
+
+            DebuggerCoordinates coords = traces.getCurrent();
+            TraceThread thread = coords.getThread();
+            if (thread == null) {
+                var threadMgr = currentTrace.getThreadManager();
+                var threads = threadMgr.getAllThreads();
+                if (!threads.isEmpty()) {
+                    thread = threads.iterator().next();
+                }
+            }
+            if (thread == null) {
+                return "Error: No thread found";
+            }
+
+            int frame = coords.getFrame();
+            long snap = coords.getViewSnap();
+            
+            var platform = coords.getPlatform();
+            if (platform == null) return "Error: No platform available";
+            
+            Language language = platform.getLanguage();
+            Register pcReg = language.getProgramCounter();
+            if (pcReg == null) return "Error: No program counter register defined for this architecture";
+            
+            var memMgr = currentTrace.getMemoryManager();
+            var memSpace = memMgr.getMemoryRegisterSpace(thread, frame, false);
+            if (memSpace == null) {
+                memSpace = memMgr.getMemoryRegisterSpace(thread, 0, false);
+            }
+            
+            if (memSpace != null) {
+                RegisterValue regVal = memSpace.getViewValue(platform, snap, pcReg);
+                if (regVal != null && regVal.hasValue()) {
+                    BigInteger value = regVal.getUnsignedValue();
+                    return String.format("0x%x", value);
+                }
+            }
+            
+            return "Error: Could not read instruction pointer";
+        } catch (Exception e) {
+            return "Error getting RIP: " + e.getMessage();
         }
     }
 
