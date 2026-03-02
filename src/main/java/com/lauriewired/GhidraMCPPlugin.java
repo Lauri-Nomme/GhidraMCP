@@ -1,5 +1,7 @@
 package com.lauriewired;
 
+import java.math.BigInteger;
+
 import ghidra.framework.plugintool.Plugin;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.address.Address;
@@ -44,13 +46,33 @@ import ghidra.program.model.listing.Variable;
 import ghidra.app.decompiler.component.DecompilerUtils;
 import ghidra.app.decompiler.ClangToken;
 import ghidra.framework.options.Options;
+import ghidra.app.services.DebuggerLogicalBreakpointService;
+import ghidra.app.services.DebuggerControlService;
+import ghidra.app.services.DebuggerTraceManagerService;
+import ghidra.app.services.DebuggerTargetService;
+import ghidra.debug.api.breakpoint.LogicalBreakpoint;
+import ghidra.trace.model.Trace;
+import ghidra.trace.model.thread.TraceThread;
+import ghidra.trace.model.context.TraceRegisterContextManager;
+import ghidra.trace.model.context.TraceRegisterContextSpace;
+import ghidra.trace.model.memory.TraceMemoryManager;
+import ghidra.program.model.lang.Language;
+import ghidra.program.model.lang.Register;
+import ghidra.program.model.lang.RegisterValue;
+import java.nio.ByteBuffer;
+import ghidra.debug.api.target.ActionName;
+import ghidra.debug.api.target.Target;
+import ghidra.debug.api.tracemgr.DebuggerCoordinates;
+import ghidra.trace.model.target.TraceObject;
+import docking.ActionContext;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import javax.swing.SwingUtilities;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
+import java.lang.ProcessBuilder;
+import java.lang.Runtime;
 import java.lang.reflect.InvocationTargetException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
@@ -71,31 +93,51 @@ public class GhidraMCPPlugin extends Plugin {
     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
     private static final String PORT_OPTION_NAME = "Server Port";
     private static final int DEFAULT_PORT = 8080;
-
+    private static final int DEBUGGER_PORT = 9090;
+    private static boolean codeBrowserServerStarted = false;
+    private static boolean debuggerServerStarted = false;
+    
     public GhidraMCPPlugin(PluginTool tool) {
         super(tool);
-        Msg.info(this, "GhidraMCPPlugin loading...");
-
-        // Register the configuration option
-        Options options = tool.getOptions(OPTION_CATEGORY_NAME);
-        options.registerOption(PORT_OPTION_NAME, DEFAULT_PORT,
-            null, // No help location for now
-            "The network port number the embedded HTTP server will listen on. " +
-            "Requires Ghidra restart or plugin reload to take effect after changing.");
-
-        try {
-            startServer();
+        
+        // Check if we're in Debugger tool (different tool name)
+        String toolName = tool.getName();
+        boolean isDebugger = toolName != null && (
+            toolName.toLowerCase().contains("debug") || 
+            toolName.equals("Debugger") ||
+            toolName.contains("Trace")
+        );
+        
+        int port = isDebugger ? DEBUGGER_PORT : DEFAULT_PORT;
+        boolean isAlreadyStarted = isDebugger ? debuggerServerStarted : codeBrowserServerStarted;
+        
+        Msg.info(this, "GhidraMCPPlugin loading in tool: '" + toolName + "' (isDebugger=" + isDebugger + ") on port " + port);
+        
+        // Start server if not already started for this tool type
+        if (!isAlreadyStarted) {
+            try {
+                startServer(port);
+                if (isDebugger) {
+                    debuggerServerStarted = true;
+                } else {
+                    codeBrowserServerStarted = true;
+                }
+            } catch (IOException e) {
+                Msg.error(this, "Failed to start HTTP server", e);
+            }
+        } else {
+            Msg.info(this, "HTTP server already running on port " + port + ", skipping start");
         }
-        catch (IOException e) {
-            Msg.error(this, "Failed to start HTTP server", e);
-        }
+        
         Msg.info(this, "GhidraMCPPlugin loaded!");
     }
 
-    private void startServer() throws IOException {
-        // Read the configured port
+    private void startServer(int port) throws IOException {
+        // Allow override via config
         Options options = tool.getOptions(OPTION_CATEGORY_NAME);
-        int port = options.getInt(PORT_OPTION_NAME, DEFAULT_PORT);
+        int configuredPort = options.getInt(PORT_OPTION_NAME, port);
+        
+        Msg.info(this, "Starting HTTP server on port " + configuredPort);
 
         // Stop existing server if running (e.g., if plugin is reloaded)
         if (server != null) {
@@ -104,7 +146,7 @@ public class GhidraMCPPlugin extends Plugin {
             server = null;
         }
 
-        server = HttpServer.create(new InetSocketAddress(port), 0);
+        server = HttpServer.create(new InetSocketAddress(configuredPort), 0);
 
         // Each listing endpoint uses offset & limit from query params:
         server.createContext("/methods", exchange -> {
@@ -199,12 +241,12 @@ public class GhidraMCPPlugin extends Plugin {
             sendResponse(exchange, getFunctionByAddress(address));
         });
 
-        server.createContext("/get_current_address", exchange -> {
-            sendResponse(exchange, getCurrentAddress());
+        server.createContext("/get_codebrowser_cursor_address", exchange -> {
+            sendResponse(exchange, getCodeBrowserCursorAddress());
         });
 
-        server.createContext("/get_current_function", exchange -> {
-            sendResponse(exchange, getCurrentFunction());
+        server.createContext("/get_codebrowser_cursor_function", exchange -> {
+            sendResponse(exchange, getCodeBrowserCursorFunction());
         });
 
         server.createContext("/list_functions", exchange -> {
@@ -339,6 +381,66 @@ public class GhidraMCPPlugin extends Plugin {
             int limit = parseIntOrDefault(qparams.get("limit"), 100);
             String filter = qparams.get("filter");
             sendResponse(exchange, listDefinedStrings(offset, limit, filter));
+        });
+
+        // Debugger endpoints
+        server.createContext("/debug/setBreakpoint", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String address = params.get("address");
+            String kind = params.getOrDefault("kind", "sw_execute");
+            boolean enabled = !"false".equals(params.get("enabled"));
+            String result = setBreakpoint(address, kind, enabled);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/debug/removeBreakpoint", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String address = params.get("address");
+            String result = removeBreakpoint(address);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/debug/listBreakpoints", exchange -> {
+            sendResponse(exchange, listBreakpoints());
+        });
+
+        server.createContext("/debug/run", exchange -> {
+            sendResponse(exchange, debugRun());
+        });
+
+        server.createContext("/debug/stop", exchange -> {
+            sendResponse(exchange, debugStop());
+        });
+
+        server.createContext("/debug/stepInto", exchange -> {
+            sendResponse(exchange, debugStepInto());
+        });
+
+        server.createContext("/debug/stepOver", exchange -> {
+            sendResponse(exchange, debugStepOver());
+        });
+
+        server.createContext("/debug/stepOut", exchange -> {
+            sendResponse(exchange, debugStepOut());
+        });
+
+        server.createContext("/debug/registers", exchange -> {
+            sendResponse(exchange, getRegisters());
+        });
+
+        server.createContext("/debug/memory", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            String address = qparams.get("address");
+            int length = parseIntOrDefault(qparams.get("length"), 64);
+            sendResponse(exchange, getMemory(address, length));
+        });
+
+        server.createContext("/debug/status", exchange -> {
+            sendResponse(exchange, getDebugStatus());
+        });
+
+        server.createContext("/debug/get_rip", exchange -> {
+            sendResponse(exchange, getDebugRip());
         });
 
         server.setExecutor(null);
@@ -730,9 +832,11 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Get current address selected in Ghidra GUI
+     * Get current address selected in Ghidra CodeBrowser UI
+     * NOTE: This is NOT the debugger instruction pointer (RIP).
+     * Use /debug/get_rip for the current execution address in a debug session.
      */
-    private String getCurrentAddress() {
+    private String getCodeBrowserCursorAddress() {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
@@ -741,9 +845,11 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Get current function selected in Ghidra GUI
+     * Get current function selected in Ghidra CodeBrowser UI
+     * NOTE: This is NOT the debugger current function.
+     * Use /debug/get_rip to get the execution address, then look up the function.
      */
-    private String getCurrentFunction() {
+    private String getCodeBrowserCursorFunction() {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
@@ -1351,6 +1457,560 @@ public class GhidraMCPPlugin extends Plugin {
             return "Error getting function references: " + e.getMessage();
         }
     }
+
+    // ----------------------------------------------------------------------------------
+    // Debugger functionality
+    // ----------------------------------------------------------------------------------
+
+    private DebuggerControlService getControlService() {
+        return tool.getService(DebuggerControlService.class);
+    }
+
+    private DebuggerLogicalBreakpointService getBreakpointService() {
+        return tool.getService(DebuggerLogicalBreakpointService.class);
+    }
+
+    private DebuggerTraceManagerService getTraceManagerService() {
+        return tool.getService(DebuggerTraceManagerService.class);
+    }
+
+    /**
+     * Set a breakpoint at the given address using ProgramLocation
+     * @param addressStr Address to set breakpoint
+     * @param kind Breakpoint kind: "sw_execute", "hw_execute", "read", "write"
+     * @param enabled Whether breakpoint is enabled
+     */
+    private String setBreakpoint(String addressStr, String kind, boolean enabled) {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: No program loaded";
+
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService == null) return "Error: Debugger service not available";
+
+            // Determine breakpoint kind
+            ghidra.trace.model.breakpoint.TraceBreakpointKind bpKind;
+            switch (kind.toLowerCase()) {
+                case "hw_execute":
+                case "hw":
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.HW_EXECUTE;
+                    break;
+                case "read":
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.READ;
+                    break;
+                case "write":
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.WRITE;
+                    break;
+                case "sw_execute":
+                case "sw":
+                case "execute":
+                default:
+                    bpKind = ghidra.trace.model.breakpoint.TraceBreakpointKind.SW_EXECUTE;
+                    break;
+            }
+            
+            java.util.Set<ghidra.trace.model.breakpoint.TraceBreakpointKind> kinds = 
+                java.util.Set.of(bpKind);
+            
+            bpService.placeBreakpointAt(program, addr, 0, kinds, "");
+            
+            return "Breakpoint set at " + addressStr + " (kind: " + bpKind.name() + ")";
+        } catch (Exception e) {
+            return "Error setting breakpoint: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Remove breakpoints at address (deletes all at that address)
+     */
+    private String removeBreakpoint(String addressStr) {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: No program loaded";
+
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService == null) return "Error: Debugger service not available";
+
+            // Get breakpoints at this address
+            var breakpoints = bpService.getBreakpointsAt(program, addr);
+            if (breakpoints != null && !breakpoints.isEmpty()) {
+                // Delete all breakpoints at this address
+                int removed = 0;
+                for (LogicalBreakpoint bp : breakpoints) {
+                    try {
+                        // delete() returns CompletableFuture<Void>, wait for completion
+                        bp.delete().get();
+                        removed++;
+                    } catch (Exception e) {
+                        return "Error deleting breakpoint: " + e.getMessage();
+                    }
+                }
+                return "Removed " + removed + " breakpoint(s) at " + addressStr;
+            }
+
+            return "No breakpoint found at " + addressStr;
+        } catch (Exception e) {
+            return "Error removing breakpoint: " + e.getMessage();
+        }
+    }
+
+    /**
+     * List all breakpoints
+     */
+    private String listBreakpoints() {
+        try {
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService == null) return "Debugger service not available";
+
+            var allBreakpoints = bpService.getAllBreakpoints();
+            if (allBreakpoints == null || allBreakpoints.isEmpty()) {
+                return "No breakpoints set";
+            }
+
+            StringBuilder sb = new StringBuilder();
+            for (LogicalBreakpoint bp : allBreakpoints) {
+                try {
+                    Address addr = bp.getAddress();
+                    String kinds = bp.getKinds() != null ? bp.getKinds().toString() : "unknown";
+                    sb.append("Address: ").append(addr != null ? addr.toString() : "unknown")
+                       .append(" Kinds: ").append(kinds)
+                       .append("\n");
+                } catch (Exception e) {
+                    sb.append("Breakpoint: ").append(bp.toString()).append("\n");
+                }
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error listing breakpoints: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Continue/resume execution using Target API
+     */
+    private String debugRun() {
+        try {
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.RESUME, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No resume action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get resume action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "Resume command sent";
+        } catch (Exception e) {
+            return "Error resuming: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Stop/interrupt execution using Target API
+     */
+    private String debugStop() {
+        try {
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.INTERRUPT, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No interrupt action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get interrupt action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "Interrupt command sent";
+        } catch (Exception e) {
+            return "Error interrupting: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Step into using Target API
+     * Note: Requires thread context - may fail if no thread selected in debugger UI
+     */
+    private String debugStepInto() {
+        try {
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            // Try STEP_INTO first (requires thread context)
+            var actions = target.collectActions(ActionName.STEP_INTO, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (!actions.isEmpty()) {
+                Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+                if (entry != null) {
+                    entry.invokeAsyncWithoutTimeout(false);
+                    return "StepInto command sent";
+                }
+            }
+
+            // Fallback: Try EXECUTE action (will need cmd parameter)
+            var execActions = target.collectActions(ActionName.EXECUTE, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (execActions.isEmpty()) return "Error: No step or execute action available";
+
+            return "Step requires thread selection in debugger UI - use Ghidra to select thread first";
+        } catch (Exception e) {
+            return "Error stepping into: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Step over using Target API
+     */
+    private String debugStepOver() {
+        try {
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.STEP_OVER, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No step_over action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get step_over action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "StepOver command sent";
+        } catch (Exception e) {
+            return "Error stepping over: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Step out using Target API
+     */
+    private String debugStepOut() {
+        try {
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager == null) return "Error: No trace manager";
+
+            DebuggerCoordinates current = traceManager.getCurrent();
+            Target target = current.getTarget();
+            if (target == null) return "Error: No active target";
+
+            var actions = target.collectActions(ActionName.STEP_OUT, null, Target.ObjectArgumentPolicy.CURRENT_AND_RELATED);
+            if (actions.isEmpty()) return "Error: No step_out action available";
+
+            Target.ActionEntry entry = actions.values().stream().findFirst().orElse(null);
+            if (entry == null) return "Error: Could not get step_out action entry";
+
+            entry.invokeAsyncWithoutTimeout(false);
+            return "StepOut command sent";
+        } catch (Exception e) {
+            return "Error stepping out: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Get current register values from active debug session
+     */
+    private String getRegisters() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            Trace currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "Error: No active trace";
+
+            DebuggerCoordinates coords = traces.getCurrent();
+            TraceThread thread = coords.getThread();
+            if (thread == null) {
+                var threadMgr = currentTrace.getThreadManager();
+                var threads = threadMgr.getAllThreads();
+                if (!threads.isEmpty()) {
+                    thread = threads.iterator().next();
+                }
+            }
+            if (thread == null) {
+                return "Error: No thread found";
+            }
+
+            int frame = coords.getFrame();
+            long snap = coords.getViewSnap();  // Use getViewSnap() like the UI does
+            
+            var platform = coords.getPlatform();
+            if (platform != null) {
+                Language language = platform.getLanguage();
+                
+                var memMgr = currentTrace.getMemoryManager();
+                
+                var memSpace = memMgr.getMemoryRegisterSpace(thread, frame, false);
+                if (memSpace == null) {
+                    memSpace = memMgr.getMemoryRegisterSpace(thread, 0, false);
+                }
+                
+                StringBuilder sb = new StringBuilder();
+                sb.append("Thread: ").append(thread.toString()).append("\n");
+                sb.append("Frame: ").append(frame).append("\n");
+                sb.append("Snap: ").append(snap).append("\n");
+                
+                if (memSpace != null) {
+                    sb.append("\nRegister values:\n");
+                    int count = 0;
+                    for (Register reg : language.getRegisters()) {
+                        if (reg.isBaseRegister()) {
+                            try {
+                                // Use getViewValue() like the UI does (line 866 in DebuggerRegistersProvider)
+                                RegisterValue regVal = memSpace.getViewValue(platform, snap, reg);
+                                if (regVal != null && regVal.hasValue()) {
+                                    BigInteger value = regVal.getUnsignedValue();
+                                    sb.append(reg.getName()).append("=").append(String.format("0x%x", value)).append(" ");
+                                    count++;
+                                    if (count >= 4) {
+                                        sb.append("\n");
+                                        count = 0;
+                                    }
+                                }
+                            } catch (Exception e) {
+                                // Skip this register
+                            }
+                        }
+                    }
+                } else {
+                    sb.append("\nNo memory register space.\n");
+                }
+                
+                return sb.toString();
+            }
+            
+            return "Check GDB console for register values.";
+        } catch (Exception e) {
+            return "Error getting registers: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Read memory. Uses trace memory if debugging (handles runtime VAs), else static program memory.
+     */
+    private String getMemory(String addressStr, int length) {
+        try {
+            // First, try to use trace memory if debugger is active
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces != null) {
+                Trace currentTrace = traces.getCurrentTrace();
+                if (currentTrace != null) {
+                    // Debugger session active - use trace memory
+                    return getMemoryFromTrace(currentTrace, traces.getCurrent().getViewSnap(), addressStr, length);
+                }
+            }
+
+            // No debugger session - fall back to static program memory
+            return getMemoryFromProgram(addressStr, length);
+        } catch (Exception e) {
+            return "Error reading memory: " + e.getMessage();
+        }
+    }
+
+    /** Read from trace memory (handles runtime VAs) */
+    private String getMemoryFromTrace(Trace trace, long snap, String addressStr, int length) {
+        try {
+            // Parse the address - trace handles both static and runtime addresses
+            Address addr = trace.getBaseAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            // Try to read from live target first (captures memory on-demand)
+            // This is necessary because trace memory only contains bytes that have been
+            // explicitly recorded (state = KNOWN). Heap regions often haven't been captured.
+            DebuggerTraceManagerService traceManager = getTraceManagerService();
+            if (traceManager != null) {
+                DebuggerCoordinates current = traceManager.getCurrent();
+                Target target = current.getTarget();
+                if (target != null && target.isValid()) {
+                    try {
+                        // Create address range for the memory we want to read
+                        ghidra.program.model.address.AddressSet addrSet = 
+                            new ghidra.program.model.address.AddressSet(addr, addr.add(length - 1));
+                        
+                        // Read from live target - this captures into the trace
+                        target.readMemory(addrSet, null);
+                        
+                        // Small delay to let the memory be recorded into trace
+                        Thread.sleep(100);
+                    } catch (Exception e) {
+                        // If live read fails, fall back to trace memory below
+                        // This can happen if target is paused or disconnected
+                    }
+                }
+            }
+
+            // Read from trace memory - following the pattern from CachedBytePage.java
+            TraceMemoryManager memMgr = trace.getMemoryManager();
+            byte[] data = new byte[length];
+            ByteBuffer buf = ByteBuffer.wrap(data);
+            
+            // CRITICAL: Must call clear() before getViewBytes, per Ghidra's CachedBytePage pattern
+            // This resets position to 0 and limit to capacity so the buffer is writable
+            buf.clear();
+            
+            int bytesRead = memMgr.getViewBytes(snap, addr, buf);
+
+            if (bytesRead <= 0) return "Error: Could not read memory at " + addr + " (snap=" + snap + ")";
+
+            return formatMemoryDump(addr, data, bytesRead, "trace");
+        } catch (Exception e) {
+            return "Error reading trace memory: " + e.getMessage();
+        }
+    }
+
+    /** Read from static program memory (requires static addresses) */
+    private String getMemoryFromProgram(String addressStr, int length) {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) return "Error: No program loaded";
+
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Error: Invalid address: " + addressStr;
+
+            // Read from program memory
+            byte[] data = new byte[length];
+            int bytesRead = program.getMemory().getBytes(addr, data);
+
+            if (bytesRead <= 0) return "Error: Could not read memory at " + addr;
+
+            return formatMemoryDump(addr, data, bytesRead, "program");
+        } catch (Exception e) {
+            return "Error reading program memory: " + e.getMessage();
+        }
+    }
+
+    /** Format memory dump in hex + ASCII */
+    private String formatMemoryDump(Address addr, byte[] data, int bytesRead, String source) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Address: ").append(addr).append("\n");
+        sb.append("Source: ").append(source).append("\n");
+        sb.append("Bytes read: ").append(bytesRead).append("\n\n");
+
+        for (int i = 0; i < bytesRead; i += 16) {
+            sb.append(String.format("%08x: ", i));
+            for (int j = 0; j < 16; j++) {
+                if (i + j < bytesRead) {
+                    sb.append(String.format("%02x ", data[i + j] & 0xFF));
+                } else {
+                    sb.append("   ");
+                }
+                if (j == 7) sb.append(" ");
+            }
+            sb.append(" |");
+            for (int j = 0; j < 16 && i + j < bytesRead; j++) {
+                byte b = data[i + j];
+                char c = (b >= 32 && b < 127) ? (char) b : '.';
+                sb.append(c);
+            }
+            sb.append("|\n");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Get debugger status
+     */
+    private String getDebugStatus() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "No debugger session";
+
+            Object currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "No active trace";
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("Trace active: ").append(currentTrace.toString()).append("\n");
+
+            DebuggerControlService control = getControlService();
+            if (control != null) {
+                sb.append("Control service: available\n");
+            }
+
+            DebuggerLogicalBreakpointService bpService = getBreakpointService();
+            if (bpService != null) {
+                var bps = bpService.getAllBreakpoints();
+                sb.append("Breakpoints: ").append(bps != null ? bps.size() : 0).append("\n");
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            return "Error getting status: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Get the current instruction pointer (RIP/PC) from the active debug session
+     */
+    private String getDebugRip() {
+        try {
+            DebuggerTraceManagerService traces = getTraceManagerService();
+            if (traces == null) return "Error: No trace manager";
+
+            Trace currentTrace = traces.getCurrentTrace();
+            if (currentTrace == null) return "Error: No active trace";
+
+            DebuggerCoordinates coords = traces.getCurrent();
+            TraceThread thread = coords.getThread();
+            if (thread == null) {
+                var threadMgr = currentTrace.getThreadManager();
+                var threads = threadMgr.getAllThreads();
+                if (!threads.isEmpty()) {
+                    thread = threads.iterator().next();
+                }
+            }
+            if (thread == null) {
+                return "Error: No thread found";
+            }
+
+            int frame = coords.getFrame();
+            long snap = coords.getViewSnap();
+            
+            var platform = coords.getPlatform();
+            if (platform == null) return "Error: No platform available";
+            
+            Language language = platform.getLanguage();
+            Register pcReg = language.getProgramCounter();
+            if (pcReg == null) return "Error: No program counter register defined for this architecture";
+            
+            var memMgr = currentTrace.getMemoryManager();
+            var memSpace = memMgr.getMemoryRegisterSpace(thread, frame, false);
+            if (memSpace == null) {
+                memSpace = memMgr.getMemoryRegisterSpace(thread, 0, false);
+            }
+            
+            if (memSpace != null) {
+                RegisterValue regVal = memSpace.getViewValue(platform, snap, pcReg);
+                if (regVal != null && regVal.hasValue()) {
+                    BigInteger value = regVal.getUnsignedValue();
+                    return String.format("0x%x", value);
+                }
+            }
+            
+            return "Error: Could not read instruction pointer";
+        } catch (Exception e) {
+            return "Error getting RIP: " + e.getMessage();
+        }
+    }
+
+    // ----------------------------------------------------------------------------------
 
 /**
  * List all defined strings in the program with their addresses

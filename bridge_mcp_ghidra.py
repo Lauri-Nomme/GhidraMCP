@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
@@ -15,6 +16,7 @@ from urllib.parse import urljoin
 from mcp.server.fastmcp import FastMCP
 
 DEFAULT_GHIDRA_SERVER = "http://127.0.0.1:8080/"
+DEBUGGER_GHIDRA_SERVER = "http://127.0.0.1:9090/"
 
 logger = logging.getLogger(__name__)
 
@@ -22,39 +24,72 @@ mcp = FastMCP("ghidra-mcp")
 
 # Initialize ghidra_server_url with default value
 ghidra_server_url = DEFAULT_GHIDRA_SERVER
+debugger_server_url = DEBUGGER_GHIDRA_SERVER
 
-def safe_get(endpoint: str, params: dict = None) -> list:
+# Debugger endpoints that need to go to port 9090
+DEBUGGER_ENDPOINTS = {
+    "debug/setBreakpoint",
+    "debug/removeBreakpoint", 
+    "debug/listBreakpoints",
+    "debug/run",
+    "debug/stop",
+    "debug/stepInto",
+    "debug/stepOver",
+    "debug/stepOut",
+    "debug/registers",
+    "debug/memory",
+    "debug/status",
+    "debug/get_rip",
+}
+
+def get_server_url(endpoint: str) -> str:
+    """Get the appropriate server URL based on endpoint."""
+    if endpoint in DEBUGGER_ENDPOINTS:
+        return debugger_server_url
+    return ghidra_server_url
+
+def safe_get(endpoint: str, params: dict = None) -> str:
     """
     Perform a GET request with optional query parameters.
     """
     if params is None:
         params = {}
 
-    url = urljoin(ghidra_server_url, endpoint)
+    server_url = get_server_url(endpoint)
+    url = urljoin(server_url, endpoint)
+    
+    logger.info(f"GET {url} params={params}")
 
     try:
         response = requests.get(url, params=params, timeout=5)
         response.encoding = 'utf-8'
+        logger.info(f"RESPONSE {response.status_code}: {response.text[:65535] if response.text else 'empty'}")
         if response.ok:
-            return response.text.splitlines()
+            return response.text
         else:
-            return [f"Error {response.status_code}: {response.text.strip()}"]
+            return f"Error {response.status_code}: {response.text.strip()}"
     except Exception as e:
-        return [f"Request failed: {str(e)}"]
+        logger.error(f"REQUEST FAILED: {e}")
+        return f"Request failed: {str(e)}"
 
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
-        url = urljoin(ghidra_server_url, endpoint)
+        server_url = get_server_url(endpoint)
+        url = urljoin(server_url, endpoint)
+        logger.info(f"POST {url} data={data}")
+        
         if isinstance(data, dict):
             response = requests.post(url, data=data, timeout=5)
         else:
             response = requests.post(url, data=data.encode("utf-8"), timeout=5)
         response.encoding = 'utf-8'
+        logger.info(f"RESPONSE {response.status_code}: {response.text[:65535] if response.text else 'empty'}")
         if response.ok:
             return response.text.strip()
         else:
             return f"Error {response.status_code}: {response.text.strip()}"
     except Exception as e:
+        logger.error(f"REQUEST FAILED: {e}")
         return f"Request failed: {str(e)}"
 
 @mcp.tool()
@@ -152,21 +187,32 @@ def get_function_by_address(address: str) -> str:
     """
     Get a function by its address.
     """
-    return "\n".join(safe_get("get_function_by_address", {"address": address}))
+    return safe_get("get_function_by_address", {"address": address})
 
 @mcp.tool()
-def get_current_address() -> str:
+def get_codebrowser_cursor_address() -> str:
     """
-    Get the address currently selected by the user.
+    Get the cursor address in the Ghidra CodeBrowser UI window.
+    
+    IMPORTANT: This is NOT the debugger instruction pointer (RIP/PC).
+    This returns the address currently selected in the CodeBrowser UI by the user.
+    
+    For the current execution address in a debug session, use debug_get_rip() instead.
     """
-    return "\n".join(safe_get("get_current_address"))
+    return safe_get("get_codebrowser_cursor_address")
 
 @mcp.tool()
-def get_current_function() -> str:
+def get_codebrowser_cursor_function() -> str:
     """
-    Get the function currently selected by the user.
+    Get the function at the cursor position in the Ghidra CodeBrowser UI window.
+    
+    IMPORTANT: This is NOT the debugger current function.
+    This returns the function containing the address currently selected in the CodeBrowser UI.
+    
+    For the current execution address in a debug session, use debug_get_rip() to get
+    the instruction pointer, then look up the function containing that address.
     """
-    return "\n".join(safe_get("get_current_function"))
+    return safe_get("get_codebrowser_cursor_function")
 
 @mcp.tool()
 def list_functions() -> list:
@@ -180,7 +226,7 @@ def decompile_function_by_address(address: str) -> str:
     """
     Decompile a function at the given address.
     """
-    return "\n".join(safe_get("decompile_function", {"address": address}))
+    return safe_get("decompile_function", {"address": address})
 
 @mcp.tool()
 def disassemble_function(address: str) -> list:
@@ -287,6 +333,156 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
         params["filter"] = filter
     return safe_get("strings", params)
 
+# ============================================================================
+# Debugger functions
+# ============================================================================
+
+@mcp.tool()
+def debug_set_breakpoint(address: str, kind: str = "sw_execute", enabled: bool = True) -> str:
+    """
+    Set a breakpoint at the given address.
+    
+    Args:
+        address: Address to set breakpoint (e.g., "0x1400010a0")
+        kind: Breakpoint kind - "sw_execute" (default), "hw_execute", "read", "write"
+        enabled: Whether the breakpoint should be enabled (default: True)
+        
+    Returns:
+        Confirmation message
+    """
+    return safe_post("debug/setBreakpoint", {
+        "address": address, 
+        "kind": kind,
+        "enabled": str(enabled)
+    })
+
+@mcp.tool()
+def debug_remove_breakpoint(address: str) -> str:
+    """
+    Remove a breakpoint at the given address.
+    
+    Args:
+        address: Address to remove breakpoint (e.g., "0x1400010a0")
+        
+    Returns:
+        Confirmation message
+    """
+    return safe_post("debug/removeBreakpoint", {"address": address})
+
+@mcp.tool()
+def debug_list_breakpoints() -> str:
+    """
+    List all active breakpoints.
+    
+    Returns:
+        List of breakpoints
+    """
+    return safe_get("debug/listBreakpoints")
+
+@mcp.tool()
+def debug_run() -> str:
+    """
+    Continue execution of the debugged program.
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/run")
+
+@mcp.tool()
+def debug_stop() -> str:
+    """
+    Halt execution of the debugged program.
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stop")
+
+@mcp.tool()
+def debug_step_into() -> str:
+    """
+    Step into the next instruction (will enter function calls).
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stepInto")
+
+@mcp.tool()
+def debug_step_over() -> str:
+    """
+    Step over the next instruction (will skip function calls).
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stepOver")
+
+@mcp.tool()
+def debug_step_out() -> str:
+    """
+    Step out of the current function (return to caller).
+    
+    Returns:
+        Confirmation message
+    """
+    return safe_get("debug/stepOut")
+
+@mcp.tool()
+def debug_registers() -> str:
+    """
+    Get current register values from the active debug session.
+    
+    Returns:
+        Register names and values
+    """
+    return safe_get("debug/registers")
+
+@mcp.tool()
+def debug_memory(address: str = None, length: int = 64) -> str:
+    """
+    Read memory at address. Accepts runtime VAs (e.g., "0x5555557344c0") when 
+    debugging, or static addresses (e.g., "0x001e04c0") otherwise.
+    
+    Args:
+        address: Address to read (hex string). If None, reads from current PC.
+        length: Number of bytes to read (default: 64)
+        
+    Returns:
+        Hex dump of memory contents
+    """
+    params = {"length": str(length)}
+    if address:
+        params["address"] = address
+    return safe_get("debug/memory", params)
+
+@mcp.tool()
+def debug_status() -> str:
+    """
+    Get debugger status (active trace, threads, breakpoints, etc.).
+    
+    Returns:
+        Debugger status information
+    """
+    return safe_get("debug/status")
+
+@mcp.tool()
+def debug_get_rip() -> str:
+    """
+    Get the current instruction pointer (RIP/PC) from the active debug session.
+    
+    This returns the address where execution is currently stopped in the debugger.
+    The value is returned as a hex string (e.g., "0x555555e00b85").
+    
+    Use this instead of get_codebrowser_cursor_address() when you need the actual
+    execution address during debugging.
+    
+    Returns:
+        Hex address string of the current instruction pointer
+    """
+    return safe_get("debug/get_rip")
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,
@@ -306,13 +502,14 @@ def main():
     
     if args.transport == "sse":
         try:
-            # Set up logging
+            # Set up logging - use DEBUG for verbose output
             log_level = logging.INFO
-            logging.basicConfig(level=log_level)
+            logging.basicConfig(level=log_level, format='%(asctime)s %(levelname)s %(message)s')
             logging.getLogger().setLevel(log_level)
 
             # Configure MCP settings
             mcp.settings.log_level = "INFO"
+            mcp.settings.transport_security.enable_dns_rebinding_protection = False
             if args.mcp_host:
                 mcp.settings.host = args.mcp_host
             else:
@@ -323,9 +520,10 @@ def main():
             else:
                 mcp.settings.port = 8081
 
-            logger.info(f"Connecting to Ghidra server at {ghidra_server_url}")
             logger.info(f"Starting MCP server on http://{mcp.settings.host}:{mcp.settings.port}/sse")
             logger.info(f"Using transport: {args.transport}")
+            logger.info(f"CodeBrowser endpoints -> {ghidra_server_url}")
+            logger.info(f"Debugger endpoints -> {debugger_server_url}")
 
             mcp.run(transport="sse")
         except KeyboardInterrupt:
